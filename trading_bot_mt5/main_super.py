@@ -49,7 +49,7 @@ DXY_ENABLED = True; DXY_THRESHOLD = 0.003; DXY_LOOKBACK_H = 1
 MTF_CONFLUENCE = True
 STATE_FILE = "bot_state_super.json"
 NEWS_BUFFER_MIN = 30; HARD_FLOOR = 50.00; MAX_SPREAD = 2.00
-DD_EMERGENCY_ENABLED = True      # Emergency shutdown at 25% DD from peak — set False to let bot blow account
+DD_EMERGENCY_ENABLED = False     # Emergency shutdown DISABLED — bot will NOT stop at -25% DD
 
 # ── Progressive Trailing ─────────────────────────────────────────
 TRAIL_STAGE1_PCT = 0.30    # Start trailing at 30% of TP distance
