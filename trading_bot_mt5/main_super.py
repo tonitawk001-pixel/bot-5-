@@ -15,6 +15,7 @@ from news_filter import NewsFilter
 from deepseek_filter import DeepSeekFilter
 import candle_patterns as cp
 import sr_levels_mtf as sr_mtf
+import sr_entry as srentry
 from performance_tracker import PerformanceTracker
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,16 +26,16 @@ from trading_bot.strategy.gold_scalping_strategy import GoldScalpingStrategy
 SYMBOL = "XAUUSD"
 MIN_SCORE_BUY = 35; MIN_SCORE_SELL = 35; MIN_SCORE = 35
 MAX_POSITIONS = 1; MAX_PER_DIRECTION = 1
-MIN_SCORE_BUY = 40; MIN_SCORE_SELL = 40; MIN_SCORE = 40
-DAILY_LOSS_PCT = 0.05
-TOTAL_RISK_LIMIT = 0.05
+DAILY_LOSS_PCT = 0.03
+TOTAL_RISK_LIMIT = 0.03
 ATR_VOL_THRESHOLD = 4.0
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 USE_AI_FILTER = False        # AI signal veto: TRUE = AI can block trades, FALSE = AI watches only
 AI_MARKET_ANALYSIS = False   # 15-min market reports: TRUE = enabled, FALSE = paused (no spam)
 AI_WATCHDOG = True           # Hourly health watchdog + error auto-fix: TRUE = ON
 AI_WATCHDOG_INTERVAL_MIN = 60  # minutes between watchdog reports
-TP_ATR_MULT = 5.0; TP_PARTIAL_MULT = 2.5; SL_ATR_MULT = 2.5
+TP_ATR_MULT = 2.0; TP_PARTIAL_MULT = 1.5; SL_ATR_MULT = 1.0
+SR_ENTRY_MODE = True          # Use pure S/R entry (ignores indicators for direction)
 BE_ATR_MULT = 2.0; BE_BUFFER_POINTS = 50
 TRAIL_ATR_MULT = 0.5      # Trail stop - gentle to allow more room
 BE_PROFIT_USD = 40         # Move SL to entry after +$40 profit
@@ -52,13 +53,13 @@ STATE_FILE = "bot_state_super.json"
 NEWS_BUFFER_MIN = 30; HARD_FLOOR = 50.00; MAX_SPREAD = 2.00
 DD_EMERGENCY_ENABLED = False     # Emergency shutdown DISABLED — bot will NOT stop at -25% DD
 
-# ── Progressive Trailing (TIGHTENED) ──────────────────────────────
-TRAIL_STAGE1_PCT = 0.20    # Start trailing at 20% of TP distance (earlier lock-in)
-TRAIL_STAGE2_PCT = 0.40    # Tighten trail at 40% of TP
-TRAIL_STAGE3_PCT = 0.60    # Aggressive trail at 60% of TP
-TRAIL_STAGE1_MULT = 0.40   # Trail distance: 40% of SL at stage 1
-TRAIL_STAGE2_MULT = 0.20   # Trail distance: 20% of SL at stage 2
-TRAIL_STAGE3_MULT = 0.10   # Trail distance: 10% of SL at stage 3 — tight lock
+# ── Progressive Trailing (SUPER TIGHT) ──────────────────────────
+TRAIL_STAGE1_PCT = 0.10    # Start trailing at 10% of TP distance
+TRAIL_STAGE2_PCT = 0.20    # Tighten at 20% of TP
+TRAIL_STAGE3_PCT = 0.33    # Super tight at 33% of TP
+TRAIL_STAGE1_MULT = 0.15   # Trail distance: 15% of SL at stage 1
+TRAIL_STAGE2_MULT = 0.08   # Trail distance: 8% of SL at stage 2
+TRAIL_STAGE3_MULT = 0.04   # Trail distance: 4% of SL at stage 3 — near TP lock
 
 # ── Partial Close ─────────────────────────────────────────────────
 PARTIAL_CLOSE_ENABLED = True   # Close 50% at 80% TP
@@ -179,7 +180,8 @@ def main_loop():
                 'TRAIL_STAGE1_PCT','TRAIL_STAGE2_PCT','TRAIL_STAGE3_PCT',
                 'TRAIL_STAGE1_MULT','TRAIL_STAGE2_MULT','TRAIL_STAGE3_MULT',
                 'PARTIAL_CLOSE_ENABLED','PARTIAL_CLOSE_PCT',
-                'MTF_SR_ENABLED','SR_NO_TRADE_BUFFER','SR_ONLY_AT_LEVELS','SR_BOUNCE_BUFFER'}
+                'MTF_SR_ENABLED','SR_NO_TRADE_BUFFER','SR_ONLY_AT_LEVELS','SR_BOUNCE_BUFFER',
+                'SR_ENTRY_MODE'}
             for key, value in overrides.items():
                 key_upper = key.upper()
                 if key_upper in _valid_keys and key_upper in _globals:

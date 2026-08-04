@@ -18,7 +18,8 @@ import candle_patterns as cp, sr_levels_mtf as sr_mtf
 # Config
 BAL = 500.0; FIXED_RISK = 0.05; SL_M = 2.5; TP_M = 5.0
 BE_M = 2.0; BE_BUF = 50; BE_USD = 40; SPREAD = 0.30
-MIN_SCORE = 30; MIN_S_BUY = 35; MIN_S_SELL = 35; HS_THRESH = 70; HS_RISK = 0.10
+MIN_SCORE = 40; MIN_S_BUY = 40; MIN_S_SELL = 40; HS_THRESH = 70; HS_RISK = 0.10
+SR_ONLY_AT_LEVELS = True; SR_BOUNCE_BUFFER = 6.0; SR_NO_TRADE_BUFFER = 3.0
 
 def download_resample():
     import yfinance as yf
@@ -98,9 +99,9 @@ def run():
             profit = pc-e if d=="BUY" else e-pc
             ppct = profit/td if td>0 else 0
             tm = 999
-            if ppct >= 0.70: tm = 0.15
-            elif ppct >= 0.50: tm = 0.35
-            elif ppct >= 0.30: tm = 0.60
+            if ppct >= 0.60: tm = 0.10
+            elif ppct >= 0.40: tm = 0.20
+            elif ppct >= 0.20: tm = 0.40
             if tm < 999:
                 ns = pc-(sd*tm) if d=="BUY" else pc+(sd*tm)
                 if (d=="BUY" and ns>p['sl']+0.1) or (d=="SELL" and ns<p['sl']-0.1):
@@ -149,8 +150,19 @@ def run():
         # Multi-TF S/R filter
         try:
             mtf = sr_eng.compute_all(h4w,h1w,m15w,m5w,pc)
-            blk, rsn = sr_eng.is_in_no_trade_zone(pc,d,mtf.get("no_buy_zones",[]),mtf.get("no_sell_zones",[]),5.0)
+            # 1. Block trades against major S/R
+            blk, rsn = sr_eng.is_in_no_trade_zone(pc,d,mtf.get("no_buy_zones",[]),mtf.get("no_sell_zones",[]),SR_NO_TRADE_BUFFER)
             if blk: continue
+            # 2. SR_ONLY_AT_LEVELS: buy near support, sell near resistance
+            if SR_ONLY_AT_LEVELS:
+                nearest_r = mtf.get("nearest_resistance", {}).get("level", pc + 50)
+                nearest_s = mtf.get("nearest_support", {}).get("level", pc - 50)
+                dist_to_r = nearest_r - pc
+                dist_to_s = pc - nearest_s
+                if d == "BUY":
+                    if dist_to_s > SR_BOUNCE_BUFFER: continue
+                elif d == "SELL":
+                    if dist_to_r > SR_BOUNCE_BUFFER: continue
         except: pass
 
         ms = MIN_S_BUY if d=="BUY" else MIN_S_SELL
