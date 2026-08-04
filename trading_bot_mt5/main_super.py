@@ -24,7 +24,7 @@ from trading_bot.indicators.technical_indicators import compute_all_indicators, 
 from trading_bot.strategy.gold_scalping_strategy import GoldScalpingStrategy
 
 SYMBOL = "XAUUSD"
-MIN_SCORE_BUY = 35; MIN_SCORE_SELL = 35; MIN_SCORE = 35
+MIN_SCORE_BUY = 45; MIN_SCORE_SELL = 45; MIN_SCORE = 45
 MAX_POSITIONS = 1; MAX_PER_DIRECTION = 1
 DAILY_LOSS_PCT = 0.03
 TOTAL_RISK_LIMIT = 0.03
@@ -34,14 +34,16 @@ USE_AI_FILTER = False        # AI signal veto: TRUE = AI can block trades, FALSE
 AI_MARKET_ANALYSIS = False   # 15-min market reports: TRUE = enabled, FALSE = paused (no spam)
 AI_WATCHDOG = True           # Hourly health watchdog + error auto-fix: TRUE = ON
 AI_WATCHDOG_INTERVAL_MIN = 60  # minutes between watchdog reports
-TP_ATR_MULT = 2.0; TP_PARTIAL_MULT = 1.5; SL_ATR_MULT = 1.0
+TP_ATR_MULT = 3.5; TP_PARTIAL_MULT = 2.0; SL_ATR_MULT = 1.2
 SR_ENTRY_MODE = True          # Use pure S/R entry (ignores indicators for direction)
-BE_ATR_MULT = 2.0; BE_BUFFER_POINTS = 50
-TRAIL_ATR_MULT = 0.5      # Trail stop - gentle to allow more room
-BE_PROFIT_USD = 40         # Move SL to entry after +$40 profit
-FIXED_RISK = 0.05           # 5% per trade
-HIGH_SCORE_THRESHOLD = 70; HIGH_SCORE_RISK = 0.10
-SECOND_POS_MIN_SCORE = 35; SECOND_POS_LOT_RATIO = 0.5
+BE_ATR_MULT = 1.5; BE_BUFFER_POINTS = 30
+TRAIL_ATR_MULT = 0.2      # Trail stop
+BE_PROFIT_USD = 25         # Move SL to entry after +$25 profit
+FIXED_RISK = 0.02           # 2% per trade (capital preservation)
+HIGH_SCORE_THRESHOLD = 75; HIGH_SCORE_RISK = 0.03
+SECOND_POS_MIN_SCORE = 50; SECOND_POS_LOT_RATIO = 0.3
+DAILY_MAX_TRADES = 3         # Max 3 trades per day
+TRADE_COOLDOWN_MIN = 15      # Minutes between trades
 HALT_HOURS = 6; MAX_CONSEC_LOSSES = 2
 REGIME_RISK_LOW = 0.01; REGIME_WR_THRESHOLD = 0.45
 RECENT_TRADE_WINDOW = 20
@@ -53,17 +55,17 @@ STATE_FILE = "bot_state_super.json"
 NEWS_BUFFER_MIN = 30; HARD_FLOOR = 50.00; MAX_SPREAD = 2.00
 DD_EMERGENCY_ENABLED = False     # Emergency shutdown DISABLED — bot will NOT stop at -25% DD
 
-# ── Progressive Trailing (SUPER TIGHT) ──────────────────────────
-TRAIL_STAGE1_PCT = 0.10    # Start trailing at 10% of TP distance
-TRAIL_STAGE2_PCT = 0.20    # Tighten at 20% of TP
-TRAIL_STAGE3_PCT = 0.33    # Super tight at 33% of TP
-TRAIL_STAGE1_MULT = 0.15   # Trail distance: 15% of SL at stage 1
-TRAIL_STAGE2_MULT = 0.08   # Trail distance: 8% of SL at stage 2
-TRAIL_STAGE3_MULT = 0.04   # Trail distance: 4% of SL at stage 3 — near TP lock
+# ── Progressive Trailing (BALANCED) ──────────────────────────────
+TRAIL_STAGE1_PCT = 0.15    # Start trailing at 15% of TP distance
+TRAIL_STAGE2_PCT = 0.30    # Tighten at 30% of TP
+TRAIL_STAGE3_PCT = 0.50    # Super tight at 50% of TP
+TRAIL_STAGE1_MULT = 0.25   # Trail distance: 25% of SL at stage 1
+TRAIL_STAGE2_MULT = 0.15   # Trail distance: 15% of SL at stage 2
+TRAIL_STAGE3_MULT = 0.08   # Trail distance: 8% of SL at stage 3
 
 # ── Partial Close ─────────────────────────────────────────────────
-PARTIAL_CLOSE_ENABLED = True   # Close 50% at 80% TP
-PARTIAL_CLOSE_PCT = 0.80       # Trigger at 80% of TP distance
+PARTIAL_CLOSE_ENABLED = True   # Close 50% at 70% TP
+PARTIAL_CLOSE_PCT = 0.70       # Trigger at 70% of TP distance (bank earlier)
 
 # ── Multi-TF S/R Filter ─────────────────────────────────────────
 MTF_SR_ENABLED = True          # Block entries near ALL S/R levels (H4/H1/M15/M5)
@@ -181,7 +183,8 @@ def main_loop():
                 'TRAIL_STAGE1_MULT','TRAIL_STAGE2_MULT','TRAIL_STAGE3_MULT',
                 'PARTIAL_CLOSE_ENABLED','PARTIAL_CLOSE_PCT',
                 'MTF_SR_ENABLED','SR_NO_TRADE_BUFFER','SR_ONLY_AT_LEVELS','SR_BOUNCE_BUFFER',
-                'SR_ENTRY_MODE'}
+                'SR_ENTRY_MODE','DAILY_MAX_TRADES','TRADE_COOLDOWN_MIN',
+                'MIN_SCORE_BUY','MIN_SCORE_SELL','MIN_SCORE'}
             for key, value in overrides.items():
                 key_upper = key.upper()
                 if key_upper in _valid_keys and key_upper in _globals:
@@ -524,7 +527,11 @@ def main_loop():
                 last_processed_m15_time = m1_time
                 save_state()
 
-                if len(pos) >= active_max_pos:
+                if len(pos) >= active_max_pos or daily_trades >= DAILY_MAX_TRADES:
+                    continue
+
+                # Trade cooldown
+                if strategy._last_trade_time and (now - strategy._last_trade_time).total_seconds() / 60 < TRADE_COOLDOWN_MIN:
                     continue
 
                 is_n, ev_title, ev_time, pause_mins = nf.is_news_active(buffer_minutes=NEWS_BUFFER_MIN)
