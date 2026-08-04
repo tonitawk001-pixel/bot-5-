@@ -515,13 +515,13 @@ def main_loop():
                 time.sleep(300)
                 continue
 
-            # New bar processing (every 15 min)
+            # New bar processing (every 1 minute for faster S/R reaction)
             if _spread_paused:
                 continue
 
-            m15_time = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
-            if last_processed_m15_time is None or m15_time > last_processed_m15_time:
-                last_processed_m15_time = m15_time
+            m1_time = now.replace(second=0, microsecond=0)
+            if last_processed_m15_time is None or m1_time > last_processed_m15_time:
+                last_processed_m15_time = m1_time
                 save_state()
 
                 if len(pos) >= active_max_pos:
@@ -536,26 +536,23 @@ def main_loop():
                         pass
                     continue
 
-                h4w = conn.get_candles(SYMBOL, "H4", 50)
+                h4w = conn.get_candles(SYMBOL, "H4", 30)
                 h1w = conn.get_candles(SYMBOL, "H1", 50)
-                m15w = conn.get_candles(SYMBOL, "M15", 100)
-                m5w = conn.get_candles(SYMBOL, "M5", 100)
-                m1w = conn.get_candles(SYMBOL, "M1", 100)
-                if h4w is None or m15w is None or m5w is None:
+                m15w = conn.get_candles(SYMBOL, "M15", 50)
+                m5w = conn.get_candles(SYMBOL, "M5", 50)
+                m1w = conn.get_candles(SYMBOL, "M1", 50)
+                if h4w is None or m15w is None or m5w is None or m1w is None:
                     continue
 
                 h4w_ren = h4w.rename(columns=lambda x: x.lower())
                 m15w_ren = m15w.rename(columns=lambda x: x.lower())
                 m5w_ren = m5w.rename(columns=lambda x: x.lower())
+                m1w_ren = m1w.rename(columns=lambda x: x.lower())
 
                 i15 = compute_all_indicators(m15w_ren)
                 i5 = compute_all_indicators(m5w_ren)
                 i4 = compute_all_indicators(h4w_ren)
-                if m1w is not None:
-                    m1w_ren = m1w.rename(columns=lambda x: x.lower())
-                    i1 = compute_all_indicators(m1w_ren)
-                else:
-                    i1 = i5
+                i1 = compute_all_indicators(m1w_ren)
 
                 h4_ema20 = i4['emas']['EMA_20'].iloc[-1]
                 h4_trend = "BULLISH" if h4w['close'].iloc[-1] > h4_ema20 else "BEARISH"
@@ -583,11 +580,37 @@ def main_loop():
                 # Current price (used by multiple filters below)
                 curr = float(m15w['close'].iloc[-1])
 
-                # Build comprehensive context for strategy — use M5 for entries (matches backtest)
-                result = strategy.analyze(i5, i5, i15, m5w.tail(5), m5w, m15w)
-                direction = result.get("direction", "NONE")
-                score = result.get("setup_score", 0)
-                strategy_reason = result.get("reason", "")
+                # ── PURE S/R ENTRY (SR_ENTRY_MODE) ──────────────
+                direction = "NONE"
+                score = 0
+                strategy_reason = ""
+                if SR_ENTRY_MODE:
+                    # Use M5 candle for pattern detection
+                    try:
+                        m5_last = m5w.iloc[-2] if len(m5w) >= 2 else m5w.iloc[-1]
+                        sr_filter = srentry.SREntryFilter()
+                        ohlcv_map = {"H4": h4w, "H1": h1w, "M15": m15w, "M5": m5w}
+                        candle_ohlc = (float(m5_last["open"]), float(m5_last["high"]),
+                                       float(m5_last["low"]), float(m5_last["close"]))
+                        sr_result = sr_filter.analyze(ohlcv_map, curr, candle_ohlc)
+                        direction = sr_result.get("direction", "NONE")
+                        score = sr_result.get("confidence", 0)
+                        strategy_reason = sr_result.get("reason", "no S/R setup")
+                        # Boost with indicator confirmation
+                        if direction != "NONE":
+                            i14_rsi = float(i15["rsi"].iloc[-1])
+                            if direction == "BUY" and 25 <= i14_rsi <= 60: score += 10
+                            elif direction == "SELL" and 40 <= i14_rsi <= 75: score += 10
+                            else: score -= 20
+                    except Exception as e:
+                        logger.warning(f"[SR-ENTRY] Failed: {e}")
+                
+                # Fallback to indicator strategy if SR_ENTRY_MODE is off or failed
+                if direction == "NONE" or score < 30:
+                    result = strategy.analyze(i5, i5, i15, m5w.tail(5), m5w, m15w)
+                    direction = result.get("direction", "NONE")
+                    score = result.get("setup_score", 0)
+                    strategy_reason = result.get("reason", "")
 
                 # ── DEEPSEEK MARKET ANALYSIS (every 15-min bar) ─────
                 if ai is not None and AI_MARKET_ANALYSIS:
@@ -962,7 +985,7 @@ def main_loop():
                 pass
             time.sleep(10)
 
-        time.sleep(60)
+        time.sleep(5)  # Check every 5 seconds for 1-min bar updates
 
 
 def _log_sl_closed(p_data: dict, pnl: float, exit_price: float):
