@@ -24,7 +24,7 @@ from trading_bot.indicators.technical_indicators import compute_all_indicators, 
 from trading_bot.strategy.gold_scalping_strategy import GoldScalpingStrategy
 
 SYMBOL = "XAUUSD"
-MIN_SCORE_BUY = 45; MIN_SCORE_SELL = 45; MIN_SCORE = 45
+MIN_SCORE_BUY = 50; MIN_SCORE_SELL = 50; MIN_SCORE = 50
 MAX_POSITIONS = 1; MAX_PER_DIRECTION = 1
 DAILY_LOSS_PCT = 0.03
 TOTAL_RISK_LIMIT = 0.03
@@ -34,16 +34,19 @@ USE_AI_FILTER = False        # AI signal veto: TRUE = AI can block trades, FALSE
 AI_MARKET_ANALYSIS = False   # 15-min market reports: TRUE = enabled, FALSE = paused (no spam)
 AI_WATCHDOG = True           # Hourly health watchdog + error auto-fix: TRUE = ON
 AI_WATCHDOG_INTERVAL_MIN = 60  # minutes between watchdog reports
-TP_ATR_MULT = 3.5; TP_PARTIAL_MULT = 2.0; SL_ATR_MULT = 1.2
+TP_ATR_MULT = 4.0; TP_PARTIAL_MULT = 2.5; SL_ATR_MULT = 1.0
 SR_ENTRY_MODE = True          # Use pure S/R entry (ignores indicators for direction)
-BE_ATR_MULT = 1.5; BE_BUFFER_POINTS = 30
-TRAIL_ATR_MULT = 0.2      # Trail stop
-BE_PROFIT_USD = 25         # Move SL to entry after +$25 profit
-FIXED_RISK = 0.02           # 2% per trade (capital preservation)
-HIGH_SCORE_THRESHOLD = 75; HIGH_SCORE_RISK = 0.03
-SECOND_POS_MIN_SCORE = 50; SECOND_POS_LOT_RATIO = 0.3
-DAILY_MAX_TRADES = 3         # Max 3 trades per day
-TRADE_COOLDOWN_MIN = 15      # Minutes between trades
+BE_ATR_MULT = 1.2; BE_BUFFER_POINTS = 25
+TRAIL_ATR_MULT = 0.15     # Trail stop
+BE_PROFIT_USD = 20         # Move SL to entry after +$20 profit
+FIXED_RISK = 0.01           # 1% per trade (maximum capital preservation)
+HIGH_SCORE_THRESHOLD = 80; HIGH_SCORE_RISK = 0.02
+SECOND_POS_MIN_SCORE = 60; SECOND_POS_LOT_RATIO = 0.25
+DAILY_MAX_TRADES = 2         # Max 2 trades per day (quality over quantity)
+TRADE_COOLDOWN_MIN = 20      # Minutes between trades
+DAILY_PROFIT_TARGET = 0.02   # 2% daily profit target — lock it and stop
+TREND_FILTER_REQUIRED = True # Only trade in H1 trend direction
+TRADE_LONDON_ONLY = True     # Only trade London/NY/overlap sessions (8-22 UTC)
 HALT_HOURS = 6; MAX_CONSEC_LOSSES = 2
 REGIME_RISK_LOW = 0.01; REGIME_WR_THRESHOLD = 0.45
 RECENT_TRADE_WINDOW = 20
@@ -184,7 +187,8 @@ def main_loop():
                 'PARTIAL_CLOSE_ENABLED','PARTIAL_CLOSE_PCT',
                 'MTF_SR_ENABLED','SR_NO_TRADE_BUFFER','SR_ONLY_AT_LEVELS','SR_BOUNCE_BUFFER',
                 'SR_ENTRY_MODE','DAILY_MAX_TRADES','TRADE_COOLDOWN_MIN',
-                'MIN_SCORE_BUY','MIN_SCORE_SELL','MIN_SCORE'}
+                'MIN_SCORE_BUY','MIN_SCORE_SELL','MIN_SCORE',
+                'DAILY_PROFIT_TARGET','TREND_FILTER_REQUIRED','TRADE_LONDON_ONLY'}
             for key, value in overrides.items():
                 key_upper = key.upper()
                 if key_upper in _valid_keys and key_upper in _globals:
@@ -331,9 +335,20 @@ def main_loop():
                 tg.notify_bot_crashed(f"Balance ${balance:.2f} below floor ${HARD_FLOOR}")
                 break
 
+            # Daily profit target reached — lock it and stop trading for the day
+            if DAILY_PROFIT_TARGET > 0 and daily_pnl >= balance * DAILY_PROFIT_TARGET:
+                daily_halted = True
+                continue
+
             # Daily halted — skip trading
             if daily_halted:
                 continue
+
+            # Session filter — only trade London/NY/overlap if enabled
+            if TRADE_LONDON_ONLY:
+                session_now = get_session()
+                if session_now not in ("london", "new_york", "overlap"):
+                    continue
 
             # Consecutive loss halt
             if halt_until and now < halt_until:
@@ -584,6 +599,14 @@ def main_loop():
                 candle_patterns_list = candle_analysis.get("patterns_detected", [])
                 sr_touch_info = candle_analysis.get("sr_touch", {})
 
+                # H1 trend filter (used for trade direction bias)
+                h1_trend = "neutral"
+                if h1w is not None and len(h1w) >= 20:
+                    try:
+                        h1_ema20 = h1w['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        h1_trend = "BULLISH" if h1w['close'].iloc[-1] > h1_ema20 else "BEARISH"
+                    except: pass
+
                 # Current price (used by multiple filters below)
                 curr = float(m15w['close'].iloc[-1])
 
@@ -730,6 +753,15 @@ def main_loop():
                     dxy_proxy = -gold_change
                     if (direction == "BUY" and dxy_proxy > DXY_THRESHOLD) or (direction == "SELL" and dxy_proxy < -DXY_THRESHOLD):
                         blocked_by = "DXY_correlation"
+                        direction = "NONE"
+
+                # ── TREND FILTER (only trade with H1 trend) ─────
+                if direction != "NONE" and TREND_FILTER_REQUIRED and h1_trend != "neutral":
+                    if direction == "BUY" and h1_trend != "BULLISH":
+                        blocked_by = f"trend_filter_BUY_into_{h1_trend}"
+                        direction = "NONE"
+                    elif direction == "SELL" and h1_trend != "BEARISH":
+                        blocked_by = f"trend_filter_SELL_into_{h1_trend}"
                         direction = "NONE"
 
                 # ── MULTI-TF S/R ENTRY FILTER ───────────────────────
