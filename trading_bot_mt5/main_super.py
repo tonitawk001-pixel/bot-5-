@@ -25,6 +25,7 @@ from trading_bot.strategy.gold_scalping_strategy import GoldScalpingStrategy
 SYMBOL = "XAUUSD"
 MIN_SCORE_BUY = 35; MIN_SCORE_SELL = 35; MIN_SCORE = 35
 MAX_POSITIONS = 1; MAX_PER_DIRECTION = 1
+MIN_SCORE_BUY = 40; MIN_SCORE_SELL = 40; MIN_SCORE = 40
 DAILY_LOSS_PCT = 0.05
 TOTAL_RISK_LIMIT = 0.05
 ATR_VOL_THRESHOLD = 4.0
@@ -51,21 +52,23 @@ STATE_FILE = "bot_state_super.json"
 NEWS_BUFFER_MIN = 30; HARD_FLOOR = 50.00; MAX_SPREAD = 2.00
 DD_EMERGENCY_ENABLED = False     # Emergency shutdown DISABLED — bot will NOT stop at -25% DD
 
-# ── Progressive Trailing ─────────────────────────────────────────
-TRAIL_STAGE1_PCT = 0.30    # Start trailing at 30% of TP distance
-TRAIL_STAGE2_PCT = 0.50    # Tighten trail at 50% of TP
-TRAIL_STAGE3_PCT = 0.70    # Aggressive trail at 70% of TP
-TRAIL_STAGE1_MULT = 0.60   # Trail distance: 60% of SL at stage 1
-TRAIL_STAGE2_MULT = 0.35   # Trail distance: 35% of SL at stage 2
-TRAIL_STAGE3_MULT = 0.15   # Trail distance: 15% of SL at stage 3 — tight lock
+# ── Progressive Trailing (TIGHTENED) ──────────────────────────────
+TRAIL_STAGE1_PCT = 0.20    # Start trailing at 20% of TP distance (earlier lock-in)
+TRAIL_STAGE2_PCT = 0.40    # Tighten trail at 40% of TP
+TRAIL_STAGE3_PCT = 0.60    # Aggressive trail at 60% of TP
+TRAIL_STAGE1_MULT = 0.40   # Trail distance: 40% of SL at stage 1
+TRAIL_STAGE2_MULT = 0.20   # Trail distance: 20% of SL at stage 2
+TRAIL_STAGE3_MULT = 0.10   # Trail distance: 10% of SL at stage 3 — tight lock
 
 # ── Partial Close ─────────────────────────────────────────────────
 PARTIAL_CLOSE_ENABLED = True   # Close 50% at 80% TP
 PARTIAL_CLOSE_PCT = 0.80       # Trigger at 80% of TP distance
 
 # ── Multi-TF S/R Filter ─────────────────────────────────────────
-MTF_SR_ENABLED = True          # Block entries near major S/R levels
-SR_NO_TRADE_BUFFER = 5.0       # Points buffer from H4/H1 levels
+MTF_SR_ENABLED = True          # Block entries near ALL S/R levels (H4/H1/M15/M5)
+SR_NO_TRADE_BUFFER = 3.0       # Tight buffer — block within 3 points of any opposing S/R
+SR_ONLY_AT_LEVELS = True       # ONLY trade at S/R levels: buy near support, sell near resistance
+SR_BOUNCE_BUFFER = 6.0         # Max distance from support/resistance to qualify as "at level"
 
 # ── Global state ──────────────────────────────────────────────────────
 consecutive_losses = 0
@@ -176,7 +179,7 @@ def main_loop():
                 'TRAIL_STAGE1_PCT','TRAIL_STAGE2_PCT','TRAIL_STAGE3_PCT',
                 'TRAIL_STAGE1_MULT','TRAIL_STAGE2_MULT','TRAIL_STAGE3_MULT',
                 'PARTIAL_CLOSE_ENABLED','PARTIAL_CLOSE_PCT',
-                'MTF_SR_ENABLED','SR_NO_TRADE_BUFFER'}
+                'MTF_SR_ENABLED','SR_NO_TRADE_BUFFER','SR_ONLY_AT_LEVELS','SR_BOUNCE_BUFFER'}
             for key, value in overrides.items():
                 key_upper = key.upper()
                 if key_upper in _valid_keys and key_upper in _globals:
@@ -684,6 +687,7 @@ def main_loop():
 
                 # ── MULTI-TF S/R ENTRY FILTER ───────────────────────
                 if direction != "NONE" and MTF_SR_ENABLED and mtf_sr_data is not None:
+                    # 1. Block trades against major S/R (H4/H1 levels)
                     blocked, sr_reason = sr_engine.is_in_no_trade_zone(
                         curr, direction,
                         mtf_sr_data.get("no_buy_zones", []),
@@ -694,8 +698,35 @@ def main_loop():
                         blocked_by = f"MTF_SR_{sr_reason[:50]}"
                         direction = "NONE"
                         logger.info(f"[MTF-SR] Blocked {original_dir}: {sr_reason}")
-                    else:
-                        # Apply S/R confluence bonus/penalty to score
+                    
+                    # 2. SR_ONLY_AT_LEVELS: Require price near support (BUY) or resistance (SELL)
+                    if direction != "NONE" and SR_ONLY_AT_LEVELS:
+                        nearest_r = mtf_sr_data.get("nearest_resistance", {}).get("level", curr + 50)
+                        nearest_s = mtf_sr_data.get("nearest_support", {}).get("level", curr - 50)
+                        dist_to_r = nearest_r - curr
+                        dist_to_s = curr - nearest_s
+                        
+                        if direction == "BUY":
+                            # BUY only near support (bounce)
+                            if dist_to_s > SR_BOUNCE_BUFFER:
+                                blocked_by = f"no_near_support_${dist_to_s:.1f}"
+                                direction = "NONE"
+                            elif dist_to_r < SR_BOUNCE_BUFFER and dist_to_s > SR_BOUNCE_BUFFER:
+                                # Price near resistance but far from support — blocked
+                                blocked_by = f"near_resistance_not_support_R=${dist_to_r:.1f}_S=${dist_to_s:.1f}"
+                                direction = "NONE"
+                        elif direction == "SELL":
+                            # SELL only near resistance (rejection)
+                            if dist_to_r > SR_BOUNCE_BUFFER:
+                                blocked_by = f"no_near_resistance_${dist_to_r:.1f}"
+                                direction = "NONE"
+                            elif dist_to_s < SR_BOUNCE_BUFFER and dist_to_r > SR_BOUNCE_BUFFER:
+                                # Price near support but far from resistance — blocked
+                                blocked_by = f"near_support_not_resistance_R=${dist_to_r:.1f}_S=${dist_to_s:.1f}"
+                                direction = "NONE"
+                    
+                    # 3. Apply S/R confluence bonus/penalty to score
+                    if direction != "NONE":
                         sr_confluence = cp.analyze_sr_confluence(direction, curr, mtf_sr_data)
                         sr_bonus = cp.compute_mtf_sr_score_bonus(candle_signal, candle_conf, sr_confluence)
                         if sr_bonus <= -100:
