@@ -1,0 +1,1 @@
+{"dd_emergency_enabled": false, "mtf_sr_enabled": true, "sr_no_trade_buffer": 5.0, "partial_close_enabled": true, "partial_close_pct": 0.80, "trail_stage1_pct": 0.30, "trail_stage2_pct": 0.50, "trail_stage3_pct": 0.70, "trail_stage1_mult": 0.60, "trail_stage2_mult": 0.35, "trail_stage3_mult": 0.15}
