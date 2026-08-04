@@ -584,8 +584,8 @@ def main_loop():
                 direction = "NONE"
                 score = 0
                 strategy_reason = ""
+                result = {"direction": "NONE", "setup_score": 0, "reason": "", "bias": "neutral", "is_mean_reversion": False}
                 if SR_ENTRY_MODE:
-                    # Use M5 candle for pattern detection
                     try:
                         m5_last = m5w.iloc[-2] if len(m5w) >= 2 else m5w.iloc[-1]
                         sr_filter = srentry.SREntryFilter()
@@ -596,24 +596,31 @@ def main_loop():
                         direction = sr_result.get("direction", "NONE")
                         score = sr_result.get("confidence", 0)
                         strategy_reason = sr_result.get("reason", "no S/R setup")
-                        # Boost with indicator confirmation
+                        # Boost with indicator+RIS confirmation
                         if direction != "NONE":
                             i14_rsi = float(i15["rsi"].iloc[-1])
-                            if direction == "BUY" and 25 <= i14_rsi <= 60: score += 10
-                            elif direction == "SELL" and 40 <= i14_rsi <= 75: score += 10
-                            else: score -= 20
+                            i5_macd = i5.get("macd", {})
+                            macd_bull = i5_macd.get("macd", pd.Series([0])).iloc[-1] > i5_macd.get("signal", pd.Series([0])).iloc[-1] if len(i5_macd) > 0 else False
+                            if direction == "BUY":
+                                if 25 <= i14_rsi <= 55: score += 15  # RSI oversold bounce
+                                if macd_bull: score += 10
+                            elif direction == "SELL":
+                                if 45 <= i14_rsi <= 75: score += 15  # RSI overbought fade
+                                if not macd_bull: score += 10
+                            # Require minimum confidence after bonuses
+                            if score < 50: direction = "NONE"
                     except Exception as e:
                         logger.warning(f"[SR-ENTRY] Failed: {e}")
                 
-                # Fallback to indicator strategy if SR_ENTRY_MODE is off or failed
-                if direction == "NONE" or score < 30:
+                # Fallback to indicator strategy if S/R didn't produce a valid signal
+                if direction == "NONE" or score < 50:
                     result = strategy.analyze(i5, i5, i15, m5w.tail(5), m5w, m15w)
                     direction = result.get("direction", "NONE")
                     score = result.get("setup_score", 0)
-                    strategy_reason = result.get("reason", "")
+                    strategy_reason = result.get("reason", "indicator_fallback")
 
-                # ── DEEPSEEK MARKET ANALYSIS (every 15-min bar) ─────
-                if ai is not None and AI_MARKET_ANALYSIS:
+                # ── DEEPSEEK MARKET ANALYSIS (only every 15 minutes) ─────
+                if ai is not None and AI_MARKET_ANALYSIS and now.minute % 15 == 0:
                     try:
                         macd_status = "bullish" if i15['macd']['macd'].iloc[-1] > i15['macd']['signal'].iloc[-1] else "bearish"
                         market_ctx = {
